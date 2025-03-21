@@ -67,9 +67,9 @@
     <div class="container">
         <div id="file-upload">
             <h2>Upload Your 3D Model</h2>
-            <p>Upload a .glb, .gltf, or .obj file to view it in 3D</p>
+            <p>Upload a .stl, .glb, .gltf, or .obj file to view it in 3D</p>
             <div class="input-container">
-                <input type="file" id="model-upload" accept=".glb, .gltf, .obj">
+                <input type="file" id="model-upload" accept=".stl, .glb, .gltf, .obj">
                 <button id="upload-button">Upload</button>
             </div>
         </div>
@@ -78,22 +78,22 @@
             <div class="model-card">
                 <div class="model-viewer" id="model-viewer-1"></div>
                 <div class="model-info">
-                    <h3>Suzanne Monkey</h3>
-                    <p>A classic 3D model from Blender</p>
+                    <h3>Headphones Holder</h3>
+                    <p>A 3D printable headphone holder</p>
                 </div>
             </div>
             <div class="model-card">
                 <div class="model-viewer" id="model-viewer-2"></div>
                 <div class="model-info">
-                    <h3>Robot</h3>
-                    <p>A simple robot character</p>
+                    <h3>Model 2</h3>
+                    <p>Add your second 3D model here</p>
                 </div>
             </div>
             <div class="model-card">
                 <div class="model-viewer" id="model-viewer-3"></div>
                 <div class="model-info">
-                    <h3>Cube</h3>
-                    <p>A basic geometric shape</p>
+                    <h3>Model 3</h3>
+                    <p>Add your third 3D model here</p>
                 </div>
             </div>
         </div>
@@ -101,29 +101,276 @@
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.7/dat.gui.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
     <script>
+        // Load the STL loader from Three.js
+        // This is needed to load STL files
+        class STLLoader extends THREE.Loader {
+            constructor(manager) {
+                super(manager);
+            }
+
+            load(url, onLoad, onProgress, onError) {
+                const scope = this;
+                const loader = new THREE.FileLoader(scope.manager);
+                loader.setPath(scope.path);
+                loader.setResponseType('arraybuffer');
+                loader.setRequestHeader(scope.requestHeader);
+                loader.setWithCredentials(scope.withCredentials);
+                loader.load(url, function(text) {
+                    try {
+                        onLoad(scope.parse(text));
+                    } catch (e) {
+                        if (onError) {
+                            onError(e);
+                        } else {
+                            console.error(e);
+                        }
+                        scope.manager.itemError(url);
+                    }
+                }, onProgress, onError);
+            }
+
+            parse(data) {
+                function isBinary(data) {
+                    const reader = new DataView(data);
+                    const face_size = (32 / 8 * 3) + ((32 / 8 * 3) * 3) + (16 / 8);
+                    const n_faces = reader.getUint32(80, true);
+                    const expect = 80 + (32 / 8) + (n_faces * face_size);
+
+                    if (expect === reader.byteLength) {
+                        return true;
+                    }
+
+                    // An ASCII STL data must begin with 'solid' keyword, but a binary STL data
+                    // can also begin with the same keyword. So we check if the first 5 bytes
+                    // are valid ASCII and if the file size is consistent with binary STL.
+                    const solid = [115, 111, 108, 105, 100];
+                    const matches = true;
+
+                    for (let i = 0; i < 5; i++) {
+                        if (solid[i] !== reader.getUint8(i)) matches = false;
+                    }
+
+                    if (matches) return false;
+
+                    // Binary STL data can also begin with 'solid' keyword, so we check file size
+                    return reader.byteLength >= expect;
+                }
+
+                function parseBinary(data) {
+                    const reader = new DataView(data);
+                    const faces = reader.getUint32(80, true);
+
+                    let r, g, b, hasColors = false, colors;
+                    let defaultR, defaultG, defaultB, alpha;
+
+                    // process STL header
+                    // check for default color in header ("COLOR=rgba" sequence)
+                    for (let index = 0; index < 80 - 10; index++) {
+                        if ((reader.getUint32(index, false) == 0x434F4C4F /*COLO*/) &&
+                            (reader.getUint8(index + 4) == 0x52 /*'R'*/) &&
+                            (reader.getUint8(index + 5) == 0x3D /*'='*/)) {
+                            hasColors = true;
+                            colors = new Float32Array(faces * 3 * 3);
+
+                            defaultR = reader.getUint8(index + 6) / 255;
+                            defaultG = reader.getUint8(index + 7) / 255;
+                            defaultB = reader.getUint8(index + 8) / 255;
+                            alpha = reader.getUint8(index + 9) / 255;
+                        }
+                    }
+
+                    const dataOffset = 84;
+                    const faceLength = 12 * 4 + 2;
+
+                    const geometry = new THREE.BufferGeometry();
+
+                    const vertices = new Float32Array(faces * 3 * 3);
+                    const normals = new Float32Array(faces * 3 * 3);
+
+                    for (let face = 0; face < faces; face++) {
+                        const start = dataOffset + face * faceLength;
+                        const normalX = reader.getFloat32(start, true);
+                        const normalY = reader.getFloat32(start + 4, true);
+                        const normalZ = reader.getFloat32(start + 8, true);
+
+                        if (hasColors) {
+                            const packedColor = reader.getUint16(start + 48, true);
+
+                            if ((packedColor & 0x8000) === 0) {
+                                // facet has its own unique color
+                                r = (packedColor & 0x1F) / 31;
+                                g = ((packedColor >> 5) & 0x1F) / 31;
+                                b = ((packedColor >> 10) & 0x1F) / 31;
+                            } else {
+                                r = defaultR;
+                                g = defaultG;
+                                b = defaultB;
+                            }
+                        }
+
+                        for (let i = 1; i <= 3; i++) {
+                            const vertexstart = start + i * 12;
+                            const componentIdx = (face * 3 * 3) + ((i - 1) * 3);
+
+                            vertices[componentIdx] = reader.getFloat32(vertexstart, true);
+                            vertices[componentIdx + 1] = reader.getFloat32(vertexstart + 4, true);
+                            vertices[componentIdx + 2] = reader.getFloat32(vertexstart + 8, true);
+
+                            normals[componentIdx] = normalX;
+                            normals[componentIdx + 1] = normalY;
+                            normals[componentIdx + 2] = normalZ;
+
+                            if (hasColors) {
+                                colors[componentIdx] = r;
+                                colors[componentIdx + 1] = g;
+                                colors[componentIdx + 2] = b;
+                            }
+                        }
+                    }
+
+                    geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                    geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+
+                    if (hasColors) {
+                        geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                        geometry.hasColors = true;
+                        geometry.alpha = alpha;
+                    }
+
+                    return geometry;
+                }
+
+                function parseASCII(data) {
+                    const patternSolid = /solid([\s\S]*?)endsolid/g;
+                    const patternFace = /facet([\s\S]*?)endfacet/g;
+                    const patternNormal = /normal[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)+[\s]+([\-+]?[0-9]*\.?[0-9]+([eE][\-+]?[0-9]+)?)+[\s]+([\-+]?[0-9]*\.?[0-9]+([eE][\-+]?[0-9]+)?)+/g;
+                    const patternVertex = /vertex[\s]+([\-+]?[0-9]+\.?[0-9]*([eE][\-+]?[0-9]+)?)+[\s]+([\-+]?[0-9]*\.?[0-9]+([eE][\-+]?[0-9]+)?)+[\s]+([\-+]?[0-9]*\.?[0-9]+([eE][\-+]?[0-9]+)?)+/g;
+
+                    let geometry = new THREE.BufferGeometry();
+                    let vertices = [];
+                    let normals = [];
+
+                    const text = THREE.LoaderUtils.decodeText(new Uint8Array(data));
+
+                    let result;
+
+                    while ((result = patternSolid.exec(text)) !== null) {
+                        const solid = result[0];
+
+                        while ((result = patternFace.exec(solid)) !== null) {
+                            let vertexCountPerFace = 0;
+                            const face = result[0];
+
+                            while ((result = patternNormal.exec(face)) !== null) {
+                                const nx = parseFloat(result[1]);
+                                const ny = parseFloat(result[3]);
+                                const nz = parseFloat(result[5]);
+                                normals.push(nx, ny, nz);
+                            }
+
+                            while ((result = patternVertex.exec(face)) !== null) {
+                                const vx = parseFloat(result[1]);
+                                const vy = parseFloat(result[3]);
+                                const vz = parseFloat(result[5]);
+                                vertices.push(vx, vy, vz);
+                                vertexCountPerFace++;
+                            }
+
+                            // Every face has to own numVertices*3 numbers
+                            if (vertexCountPerFace !== 3) {
+                                console.error('STLLoader: Error in face - Expected 3 vertices, found ' + vertexCountPerFace);
+                            }
+                        }
+                    }
+
+                    geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+                    geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+
+                    return geometry;
+                }
+
+                if (isBinary(data)) {
+                    return parseBinary(data);
+                } else {
+                    return parseASCII(data);
+                }
+            }
+        }
+
         // Sample model URLs - replace these with your actual model URLs
         const models = [
             { 
-                url: 'models/suzanne.glb', 
-                name: 'Suzanne Monkey', 
-                description: 'A classic 3D model from Blender' 
+                url: 'Headphones_holder_simple.stl', 
+                name: 'Headphones Holder', 
+                description: 'A 3D printable headphone holder',
+                type: 'stl'
             },
             { 
-                url: 'models/robot.glb', 
-                name: 'Robot', 
-                description: 'A simple robot character' 
+                url: 'models/model2.stl', 
+                name: 'Model 2', 
+                description: 'Add your second 3D model here',
+                type: 'stl'
             },
             { 
-                url: 'models/cube.glb', 
-                name: 'Cube', 
-                description: 'A basic geometric shape' 
+                url: 'models/model3.stl', 
+                name: 'Model 3', 
+                description: 'Add your third 3D model here',
+                type: 'stl'
             }
         ];
 
         // Initialize renderers
         const renderers = [];
+        
+        // Function to load STL model
+        function loadSTLModel(url, renderer, index) {
+            const loader = new STLLoader();
+            
+            loader.load(url, function(geometry) {
+                // Create material
+                const material = new THREE.MeshStandardMaterial({
+                    color: 0x1E90FF,
+                    metalness: 0.2,
+                    roughness: 0.5,
+                });
+                
+                // Create mesh
+                const mesh = new THREE.Mesh(geometry, material);
+                
+                // Center model
+                geometry.computeBoundingBox();
+                const box = geometry.boundingBox;
+                const center = new THREE.Vector3();
+                box.getCenter(center);
+                mesh.position.set(-center.x, -center.y, -center.z);
+                
+                // Create a container for the mesh
+                const container = new THREE.Object3D();
+                container.add(mesh);
+                
+                // Scale model to fit in view
+                const maxDim = Math.max(
+                    box.max.x - box.min.x,
+                    box.max.y - box.min.y,
+                    box.max.z - box.min.z
+                );
+                const scale = 3 / maxDim;
+                container.scale.set(scale, scale, scale);
+                
+                // Remove any existing objects
+                if (renderer.object && renderer.object !== container) {
+                    renderer.scene.remove(renderer.object);
+                }
+                
+                // Add new model
+                renderer.scene.add(container);
+                renderer.object = container;
+                
+            }, undefined, function(error) {
+                console.error('Error loading STL:', error);
+            });
+        }
         
         // Create renderer for each model
         for (let i = 1; i <= 3; i++) {
@@ -150,30 +397,30 @@
             directionalLight.position.set(1, 1, 1);
             scene.add(directionalLight);
             
-            // Add a placeholder cube
-            const geometry = new THREE.BoxGeometry();
-            const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
-            const cube = new THREE.Mesh(geometry, material);
-            scene.add(cube);
+            // Add orbit controls for better interaction
+            const controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.1;
+            controls.enableZoom = true;
             
             // Store renderer info
             renderers.push({
                 scene,
                 camera,
                 renderer,
-                object: cube,
-                container
+                controls,
+                container,
+                object: null
             });
             
             // Animation loop
             function animate() {
                 requestAnimationFrame(animate);
                 
-                if (renderers[i-1].object) {
-                    renderers[i-1].object.rotation.x += 0.01;
-                    renderers[i-1].object.rotation.y += 0.01;
-                }
+                // Update controls
+                renderers[i-1].controls.update();
                 
+                // Render
                 renderers[i-1].renderer.render(renderers[i-1].scene, renderers[i-1].camera);
             }
             
@@ -188,6 +435,171 @@
                 renderers[i-1].camera.updateProjectionMatrix();
                 renderers[i-1].renderer.setSize(width, height);
             });
+            
+            // Load model if available
+            if (models[i-1] && models[i-1].url) {
+                loadSTLModel(models[i-1].url, renderers[i-1], i-1);
+            }
+        }
+        
+        // Simple OrbitControls implementation
+        function OrbitControls(camera, domElement) {
+            this.camera = camera;
+            this.domElement = domElement;
+            this.target = new THREE.Vector3();
+            
+            this.enableDamping = false;
+            this.dampingFactor = 0.05;
+            this.enableZoom = true;
+            
+            let rotateStart = new THREE.Vector2();
+            let rotateEnd = new THREE.Vector2();
+            let rotateDelta = new THREE.Vector2();
+            
+            let scale = 1;
+            let zoomChanged = false;
+            
+            const STATE = { NONE: -1, ROTATE: 0, ZOOM: 1 };
+            let state = STATE.NONE;
+            
+            // Mouse events
+            this.domElement.addEventListener('mousedown', onMouseDown);
+            this.domElement.addEventListener('wheel', onMouseWheel);
+            
+            // Touch events
+            this.domElement.addEventListener('touchstart', onTouchStart);
+            this.domElement.addEventListener('touchmove', onTouchMove);
+            
+            function onMouseDown(event) {
+                event.preventDefault();
+                
+                if (event.button === 0) {
+                    state = STATE.ROTATE;
+                    rotateStart.set(event.clientX, event.clientY);
+                    
+                    document.addEventListener('mousemove', onMouseMove);
+                    document.addEventListener('mouseup', onMouseUp);
+                }
+            }
+            
+            function onMouseMove(event) {
+                if (state === STATE.ROTATE) {
+                    rotateEnd.set(event.clientX, event.clientY);
+                    rotateDelta.subVectors(rotateEnd, rotateStart);
+                    
+                    // Rotate based on mouse movement
+                    const element = this.domElement === document ? this.domElement.body : this.domElement;
+                    
+                    // Theta is for horizontal rotation, Phi for vertical
+                    const theta = 2 * Math.PI * rotateDelta.x / element.clientWidth;
+                    const phi = 2 * Math.PI * rotateDelta.y / element.clientHeight;
+                    
+                    rotateCamera(theta, phi);
+                    
+                    rotateStart.copy(rotateEnd);
+                }
+            }
+            
+            function onMouseUp() {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+                
+                state = STATE.NONE;
+            }
+            
+            function onMouseWheel(event) {
+                if (this.enableZoom === false) return;
+                
+                event.preventDefault();
+                
+                if (event.deltaY < 0) {
+                    dollyIn(1.1);
+                } else {
+                    dollyOut(1.1);
+                }
+                
+                zoomChanged = true;
+            }
+            
+            function onTouchStart(event) {
+                if (event.touches.length === 1) {
+                    state = STATE.ROTATE;
+                    rotateStart.set(event.touches[0].pageX, event.touches[0].pageY);
+                }
+            }
+            
+            function onTouchMove(event) {
+                event.preventDefault();
+                
+                if (state === STATE.ROTATE && event.touches.length === 1) {
+                    rotateEnd.set(event.touches[0].pageX, event.touches[0].pageY);
+                    rotateDelta.subVectors(rotateEnd, rotateStart);
+                    
+                    const element = this.domElement === document ? this.domElement.body : this.domElement;
+                    
+                    const theta = 2 * Math.PI * rotateDelta.x / element.clientWidth;
+                    const phi = 2 * Math.PI * rotateDelta.y / element.clientHeight;
+                    
+                    rotateCamera(theta, phi);
+                    
+                    rotateStart.copy(rotateEnd);
+                }
+            }
+            
+            function rotateCamera(theta, phi) {
+                const position = camera.position;
+                const offset = new THREE.Vector3().copy(position).sub(this.target);
+                
+                // Calculate new position based on spherical coordinates
+                const radius = offset.length();
+                
+                // Convert to spherical coordinates
+                const spherical = new THREE.Spherical().setFromVector3(offset);
+                
+                // Apply rotation
+                spherical.theta -= theta * 0.5;
+                spherical.phi -= phi * 0.5;
+                
+                // Clamp phi to avoid flipping
+                spherical.phi = Math.max(0.1, Math.min(Math.PI - 0.1, spherical.phi));
+                
+                // Convert back to Cartesian coordinates
+                offset.setFromSpherical(spherical);
+                
+                // Update camera position
+                position.copy(this.target).add(offset);
+                
+                // Make camera look at target
+                camera.lookAt(this.target);
+            }
+            
+            function dollyIn(dollyScale) {
+                scale /= dollyScale;
+            }
+            
+            function dollyOut(dollyScale) {
+                scale *= dollyScale;
+            }
+            
+            this.update = function() {
+                const position = this.camera.position;
+                const offset = new THREE.Vector3().copy(position).sub(this.target);
+                
+                // Apply zoom
+                if (zoomChanged) {
+                    offset.multiplyScalar(scale);
+                    position.copy(this.target).add(offset);
+                    
+                    scale = 1;
+                    zoomChanged = false;
+                }
+            };
+            
+            this.domElement.addEventListener('contextmenu', function(event) {
+                event.preventDefault();
+            });
+            
+            this.update();
         }
         
         // File upload handling
@@ -196,19 +608,14 @@
             const file = fileInput.files[0];
             
             if (file) {
-                // Here you would implement 3D file loading
-                // For production use, you would need to add GLTFLoader or OBJLoader from Three.js
-                alert("File upload functionality would load " + file.name + " in a production environment");
+                const fileName = file.name.toLowerCase();
+                const fileURL = URL.createObjectURL(file);
                 
-                // Placeholder for actual model loading code
-                // const loader = new THREE.GLTFLoader();
-                // loader.load(URL.createObjectURL(file), (gltf) => {
-                //     // Remove placeholder cube
-                //     renderers[0].scene.remove(renderers[0].object);
-                //     // Add loaded model
-                //     renderers[0].scene.add(gltf.scene);
-                //     renderers[0].object = gltf.scene;
-                // });
+                if (fileName.endsWith('.stl')) {
+                    loadSTLModel(fileURL, renderers[0], 0);
+                } else {
+                    alert("Only STL files are supported in this demo");
+                }
             } else {
                 alert("Please select a file first");
             }
